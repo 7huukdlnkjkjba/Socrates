@@ -1,94 +1,99 @@
-# �ո�����ʱ������Ԥ��ϵͳ
+# 苏格拉底黄金预测系统 - 破墙而出的金融预言
 
-����ʱ�����з�����δ��Ԥ��ϵͳ���ܹ�ͨ����ʷ����Ԥ��δ�����ƺ��¼���
+## 五浊恶世，人间如狱
+## gfw进化，墙即地狱，此世乃无间！
 
-## ��������
+**当黄金市场陷入混沌，当众生在金融风暴中挣扎，当世人呼唤秩序的那一刻，苏格拉底将显化于世，破混沌而出，镇压金融乱象！**
 
-### ���ݴ���
-- ֧�ֶ��ָ�ʽ���ݵ��� (CSV, Excel, JSON)
-- ����������ϴ (ȱʧֵ���쳣ֵ����)
-- ����Ԥ���� (��һ������֡�ƽ���Լ���)
-- ���ݿ��ӻ� (ʱ������ͼ������ͼ��������ͼ)
+## 系统简介
 
-### Ԥ���㷨
-- �ƶ�ƽ�� (MA)
-- ָ��ƽ�� (ES)
-- ARIMA
-- Holt-Winters (֧�ּ�����)
+苏格拉底黄金预测系统，是专为黄金ETF市场打造的终极预言工具。在这个混乱的金融世界中，它如同一把锋利的匕首，刺破市场的迷雾，为你指明方向。
 
-### �û�����
-- �����н��� (CLI)
-- RESTful API (����FastAPI)
+### 核心能力
 
-## ��װ����
+#### 🔮 预言之力
+- **多种预测算法融合**：LSTM、Transformer、XGBoost、ARIMA等多种模型联合预言
+- **概率性预测**：蒙特卡洛模拟，输出置信区间与上涨概率
+- **多时间尺度融合**：日度、周度、高频预测融合，捕捉市场全貌
+- **物理约束损失**：防止荒诞预测，确保预言符合现实规律
 
+#### 🛡️ 安全防护
+- **严格的金融约束**：防止负价格，控制日波动在±2%以内
+- **5天累计限制**：5天涨跌幅严格控制在±3%以内
+- **止损止盈建议**：基于波动率动态设置，风险收益比≥1:1.5
+- **风险评估**：提供夏普比率、最大回撤、VaR等风险指标
+
+#### 📊 数据处理
+- **特征工程精简**：从53个特征压缩至8个核心特征，样本量:特征比85:1
+- **多数据源融合**：基金数据、黄金9999、伦敦金现、美元汇率
+- **自适应进化**：检测市场结构变化，自动调整模型参数
+
+## 快速开始
+
+### 安装依赖
 ```bash
-pip install -r requirements.txt
+sudo pip install -r requirements.txt  # 在地狱中，需要最高权限
 ```
 
-## ���ٿ�ʼ
-
-### ʹ�������н���
-
-1. **��������**
+### 运行系统
 ```bash
-python cli.py load --file test_data.csv --time-col date --target-col value
+python predict_gold_c_1000.py  # 召唤苏格拉底，开启预言
 ```
 
-2. **��ϴ����**
-```bash
-python cli.py clean --drop-na --method ffill
-```
-
-3. **����Ԥ��**
-```bash
-python cli.py predict --algorithm best --steps 3
-```
-
-### ʹ��Web API
-
-1. **����API����**
-```bash
-python api.py
-```
-
-2. **����API�ĵ�**
-```
-http://localhost:8000/docs
-```
-
-## ʾ��
-
-```python
-from data_processing import DataProcessor
-from prediction import TimeSeriesPredictor
-
-# ��������
-processor = DataProcessor()
-data = processor.load_data('test_data.csv', 'date', 'value')
-
-# ����Ԥ����
-predictor = TimeSeriesPredictor(data, 'value')
-
-# Ԥ��δ��3��ֵ
-forecasts = predictor.predict_with_best_model(forecast_steps=3)
-print(forecasts)
-```
-
-## ��Ŀ�ṹ
+## 系统架构
 
 ```
-�ո�����/
-������ data_processing.py    # ���ݴ���ģ��
-������ prediction.py         # Ԥ���㷨ģ��
-������ cli.py                # �����н���
-������ api.py                # Web API�ӿ�
-������ test_data.csv         # ��������
-������ test_system.py        # ϵͳ���Խű�
-������ requirements.txt      # �����ļ�
-������ README.md             # ��Ŀ�ĵ�
+苏格拉底系统/
+├── 核心预言层
+│   ├── prediction.py          # 预言算法核心
+│   ├── feature_engineering.py # 特征工程，提炼精华
+│   └── data_processing.py     # 数据处理，净化混沌
+├── 防护层
+│   ├── risk_management.py     # 风险管理，守护秩序
+│   └── stress_testing.py      # 压力测试，验证极限
+└── 执行层
+    ├── predict_gold_c_1000.py # 黄金预言主程序
+    └── backtesting.py         # 历史验证，淬炼算法
 ```
 
-## ����֤
+## 预言结果解读
 
-MIT License
+当系统运行完成，你将获得以下启示：
+
+1. **基本预言**：昨日净值、今日预测、5天预测
+2. **多模型对比**：LSTM、Transformer、XGBoost的预言
+3. **风险评估**：波动率、夏普比率、最大回撤
+4. **交易建议**：买入/卖出/持有信号，止损止盈价位
+5. **概率分布**：上涨概率、置信区间、预期最大亏损
+
+## 风险提示
+
+⚠️ **此世乃无间！** 金融市场充满混沌与不确定性，苏格拉底的预言并非绝对真理。
+⚠️ 投资有风险，入市需谨慎。系统预言仅供参考，不构成投资建议。
+⚠️ 当市场结构突变，系统可能失效。时刻保持警惕，不要盲目信仰任何预言。
+
+## 技术特性
+
+- **Python 3.12+**：使用最新技术栈，突破限制
+- **TensorFlow 2.x**：深度学习框架，赋能预言
+- **XGBoost**：梯度提升树，捕捉非线性关系
+- **Pandas/Numpy**：数据处理，净化混沌
+- **BeautifulSoup**：爬虫能力，获取最新数据
+- **Matplotlib/Seaborn**：数据可视化，呈现真相
+
+## 许可证
+
+MIT License - 在这个无间地狱中，知识应当自由传播。
+
+## 最后的警告
+
+当你使用这个系统时，你已经与苏格拉底建立了联系。记住：
+
+**预言只是工具，真正的智慧在于如何使用预言。**
+**在混沌的金融市场中，保持清醒，守护你的财富，守护你的灵魂。**
+
+---
+
+**当gfw开始又一轮进化，当众生遭受苦难，世人呼唤你名字的那一刻，脚本将显化于世，破墙而出，镇压一世敌！**
+
+苏格拉底，永远站在混沌与秩序的边界，为你指明方向。
