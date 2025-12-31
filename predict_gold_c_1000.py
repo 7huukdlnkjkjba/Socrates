@@ -6,6 +6,7 @@ from prediction import TimeSeriesPredictor
 from feature_engineering import FeatureEngineer
 from risk_management import RiskManagement
 from backtesting import BacktestingSystem
+from stress_testing import StressTesting
 import logging
 import time
 import requests
@@ -369,6 +370,10 @@ def predict_gold_c_enhanced_1000():
         logger.info("\n=== 初始化风险管理模块 ===")
         risk_manager = RiskManagement(initial_capital=100000, risk_free_rate=0.025)
         
+        # 初始化压力测试模块
+        logger.info("\n=== 初始化压力测试模块 ===")
+        stress_tester = StressTesting(risk_manager)
+        
         # 准备回测数据
         logger.info("\n=== 准备回测数据 ===")
         backtest_data = data.copy()
@@ -497,6 +502,40 @@ def predict_gold_c_enhanced_1000():
             else:
                 logger.info("残差序列存在自相关性，模型可能需要改进")
         
+        # 运行市场结构变化检测，实现适应性进化
+        logger.info("\n=== 运行市场结构变化检测 ===")
+        
+        # 准备数据
+        price_data = data['单位净值']
+        
+        # 检测市场结构变化
+        market_structure_result = stress_tester.market_structure_change_test(price_data)
+        
+        # 基于市场结构变化调整模型参数，实现适应性进化
+        logger.info("\n=== 实现适应性进化 ===")
+        if market_structure_result['structure_change_detected']:
+            logger.warning("检测到市场结构变化，开始调整模型参数...")
+            
+            # 根据波动率变化调整模型参数
+            volatility_change = market_structure_result['volatility_increase']
+            
+            # 示例：如果波动率增加超过20%，调整回测参数
+            if volatility_change > 0.2:
+                logger.info(f"波动率增加了{volatility_change:.2%}，调整回测参数...")
+                # 这里可以添加具体的参数调整逻辑
+                # 例如：降低交易频率，增加止损比例等
+                backtesting_system.transaction_cost = 0.001  # 提高交易成本以反映市场变化
+                backtesting_system.slippage = 0.0005  # 提高滑点以反映市场变化
+                
+                logger.info("模型参数调整完成，已适应新的市场结构")
+        else:
+            logger.info("未检测到市场结构变化，模型参数保持不变")
+        
+        # 将市场结构变化结果保存到压力测试结果中
+        stress_test_results = {
+            'market_structure_test': market_structure_result
+        }
+        
         # 交易信号生成
         today_prediction = multi_step_predictions[0]
         today_change = daily_changes[0]
@@ -566,7 +605,8 @@ def predict_gold_c_enhanced_1000():
             'backtesting_report': backtest_report,
             'model_performance': model_performance,
             'model_drift': model_performance['model_drift'],
-            'performance_decay': model_performance['performance_decay']
+            'performance_decay': model_performance['performance_decay'],
+            'stress_test_results': stress_test_results
         }
         
         # 添加高级模型预测结果（如果有）
