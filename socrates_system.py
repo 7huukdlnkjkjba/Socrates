@@ -6,6 +6,8 @@ from feature_engineering import FeatureEngineer
 from prediction import TimeSeriesPredictor
 from pytorch_predictor import PyTorchTimeSeriesPredictor
 from traditional_forecasting import TraditionalForecasting
+from risk_management import RiskManagement
+from backtesting import BacktestingSystem
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -39,6 +41,10 @@ class SocratesSystem:
         # 传统预测方法相关
         self.traditional_forecaster = None
         self.traditional_predictions = None
+        
+        # 风险管理和回测系统
+        self.risk_manager = None
+        self.backtesting_system = None
         
         # 添加系统配置
         self.use_real_data = True  # 默认使用真实数据
@@ -506,7 +512,21 @@ class SocratesSystem:
         # 保存传统预测结果
         self.traditional_predictions = traditional_results
         
-        # 实现集成策略（动态加权平均，基于模型最近性能）
+        # 验证和清理预测值
+        for model_name, preds in model_predictions.items():
+            if preds is None or len(preds) == 0:
+                model_predictions[model_name] = [current_price] * forecast_steps
+            else:
+                # 检查预测值是否合理
+                cleaned_preds = []
+                for pred in preds:
+                    if np.isnan(pred) or np.isinf(pred) or abs(pred) > 100 * current_price:
+                        cleaned_preds.append(current_price)
+                    else:
+                        cleaned_preds.append(pred)
+                model_predictions[model_name] = cleaned_preds
+        
+        # 实现集成策略（动态加权平均，基于模型最近性能和一致性）
         logger.info("进行多模型集成...")
         
         # 计算动态权重
@@ -522,20 +542,27 @@ class SocratesSystem:
         if total_weight > 0:
             weights = {k: v / total_weight for k, v in weights.items()}
         
-        # 验证和清理预测值
-        current_price = self.feature_matrix['fund_close'].iloc[-1]
-        for model_name, preds in model_predictions.items():
-            if preds is None or len(preds) == 0:
-                model_predictions[model_name] = [current_price] * forecast_steps
-            else:
-                # 检查预测值是否合理
-                cleaned_preds = []
-                for pred in preds:
-                    if np.isnan(pred) or np.isinf(pred) or abs(pred) > 100 * current_price:
-                        cleaned_preds.append(current_price)
-                    else:
-                        cleaned_preds.append(pred)
-                model_predictions[model_name] = cleaned_preds
+        # 计算模型一致性
+        consistency = self._calculate_model_consistency(model_predictions, current_price, weights)
+        consistency_score = consistency['consistency_score']
+        
+        # 基于模型一致性调整集成策略
+        logger.info(f"基于模型一致性({consistency_score:.4f})调整集成策略")
+        
+        # 如果模型一致性低，调整权重分配
+        if consistency_score < 0.4:  # 模型预测严重分歧
+            logger.warning("模型预测严重分歧，调整权重分配")
+            # 降低传统方法的权重，增加主要模型的权重
+            for method_name in ['i_ching', 'liu_yao', 'qimen', 'tarot']:
+                if method_name in weights:
+                    weights[method_name] *= 0.5  # 将传统方法权重减半
+            # 增加主要模型的权重，确保总和为1
+            main_model_weight_increase = sum(weights.values()) * 0.1  # 增加10%的权重用于主要模型
+            weights['xgboost'] = weights.get('xgboost', 0) + main_model_weight_increase
+            # 重新归一化权重
+            total_weight = sum(weights.values())
+            if total_weight > 0:
+                weights = {k: v / total_weight for k, v in weights.items()}
         
         # 计算集成预测结果
         ensemble_preds = []
@@ -552,6 +579,13 @@ class SocratesSystem:
                 # 限制变化幅度在合理范围内（单日最大波动10%）
                 max_change = current_price * 0.10
                 predicted_price = current_price + weighted_sum - current_price
+                
+                # 如果模型一致性低，进一步限制变化幅度
+                if consistency_score < 0.4:
+                    max_change *= 0.5  # 将最大波动限制减半
+                elif consistency_score < 0.6:
+                    max_change *= 0.8  # 将最大波动限制为80%
+                
                 if abs(predicted_price - current_price) > max_change:
                     if predicted_price > current_price:
                         predicted_price = current_price + max_change
@@ -564,6 +598,10 @@ class SocratesSystem:
         self.predictions = model_predictions
         self.predictions['ensemble'] = ensemble_preds
         self.ensemble_predictions = ensemble_preds
+        
+        # 计算模型一致性
+        logger.info("=== 模型一致性分析 ===")
+        self.model_consistency = self._calculate_model_consistency(model_predictions, current_price, weights)
         
         # 输出预测结果
         logger.info(f"未来{forecast_steps}天各模型预测结果:")
@@ -590,14 +628,82 @@ class SocratesSystem:
         logger.info(f"当前基金价格: {current_price:.6f}")
         logger.info("涨跌趋势判断:")
         
+        self.predicted_changes = []
         for i in range(min(forecast_steps, 5)):
             change = (ensemble_preds[i] - current_price) / current_price * 100
+            self.predicted_changes.append(change)
             trend = "上涨" if change > 0 else "下跌"
             logger.info(f"第{i+1}天: {trend} {abs(change):.2f}%")
+        
+        # 输出模型一致性分析
+        logger.info(f"模型一致性分数: {self.model_consistency['consistency_score']:.4f}")
+        logger.info(f"主要模型趋势一致性: {self.model_consistency['trend_consistency']:.2f}%")
+        logger.info(f"模型预测分歧程度: {self.model_consistency['dispersion']:.4f}%")
+        logger.info(f"一致性评估: {self.model_consistency['assessment']}")
         
         logger.info("=== 多模型集成预测完成 ===")
         
         return ensemble_preds
+    
+    def _calculate_model_consistency(self, model_predictions, current_price, weights):
+        """计算模型预测的一致性
+        
+        参数:
+        model_predictions: 各模型预测结果
+        current_price: 当前价格
+        weights: 模型权重
+        
+        返回:
+        dict: 包含一致性指标的字典
+        """
+        # 获取主要模型的预测（权重较大的模型）
+        major_models = [model for model, weight in weights.items() if weight > 0.05 and model not in ['ensemble']]
+        
+        # 计算各模型的预测变化率
+        model_changes = {}
+        for model_name, preds in model_predictions.items():
+            if model_name in major_models and len(preds) > 0:
+                change = (preds[0] - current_price) / current_price * 100
+                model_changes[model_name] = change
+        
+        if len(model_changes) < 2:
+            return {
+                'consistency_score': 0.5,
+                'trend_consistency': 50.0,
+                'dispersion': 0.0,
+                'assessment': "模型数量不足，无法评估一致性"
+            }
+        
+        # 计算趋势一致性（同向预测的比例）
+        changes = list(model_changes.values())
+        trends = [1 if change > 0 else 0 for change in changes]
+        positive_trend_count = sum(trends)
+        negative_trend_count = len(trends) - positive_trend_count
+        trend_consistency = max(positive_trend_count, negative_trend_count) / len(trends) * 100
+        
+        # 计算预测分散度（标准差）
+        dispersion = np.std(changes)
+        
+        # 计算一致性分数（0-1，越高越一致）
+        consistency_score = 1.0 / (1.0 + dispersion / 100.0) * (trend_consistency / 100.0)
+        
+        # 生成一致性评估
+        if consistency_score > 0.8:
+            assessment = "模型预测高度一致，置信度高"
+        elif consistency_score > 0.6:
+            assessment = "模型预测基本一致，置信度中等"
+        elif consistency_score > 0.4:
+            assessment = "模型预测存在一定分歧，置信度较低"
+        else:
+            assessment = "模型预测严重分歧，置信度极低"
+        
+        return {
+            'consistency_score': consistency_score,
+            'trend_consistency': trend_consistency,
+            'dispersion': dispersion,
+            'assessment': assessment,
+            'model_changes': model_changes
+        }
     
     def save_predictions(self):
         """保存当前预测记录到历史中"""
@@ -668,11 +774,77 @@ class SocratesSystem:
         # 评估模型性能
         self.evaluate_models()
         
+        # 初始化风险管理和回测系统
+        self.risk_manager = RiskManagement()
+        self.backtesting_system = BacktestingSystem()
+        
+        # 进行回测
+        logger.info("=== 开始回测系统 ===")
+        try:
+            # 定义回测策略函数 - 基于模型一致性和预测结果
+            def backtest_strategy(historical_data, forecast_steps=1):
+                # 简化的策略：基于当前价格趋势和模型一致性
+                if len(historical_data) > 2:
+                    recent_trend = historical_data['close'].iloc[-1] - historical_data['close'].iloc[-3]
+                    if recent_trend > 0:
+                        return 1, historical_data['close'].iloc[-1] * 1.01  # 买入信号
+                    else:
+                        return -1, historical_data['close'].iloc[-1] * 0.99  # 卖出信号
+                return 0, historical_data['close'].iloc[-1]  # 持有信号
+            
+            # 准备回测数据：添加date列
+            backtest_data = self.feature_engineer.fund_data.copy()
+            backtest_data = backtest_data.reset_index()  # 将日期索引转换为date列
+            if 'close' not in backtest_data.columns:
+                if 'fund_close' in backtest_data.columns:
+                    backtest_data['close'] = backtest_data['fund_close']
+                else:
+                    backtest_data['close'] = backtest_data.iloc[:, -1]  # 使用最后一列作为收盘价
+            
+            # 运行回测
+            backtest_results = self.backtesting_system.run_backtest(
+                data=backtest_data,  # 使用准备好的回测数据
+                strategy_func=backtest_strategy,
+                lookback=20,
+                forecast_steps=1
+            )
+            
+            # 生成回测报告
+            backtest_report = self.backtesting_system.generate_backtest_report()
+            logger.info("回测完成，报告生成成功")
+            
+            # 打印简化的回测结果
+            self.backtesting_system.plot_backtest_results()
+            
+            # 检查模型漂移和性能衰减
+            model_performance = self.backtesting_system.analyze_model_performance()
+            if model_performance.get('model_drift', False):
+                logger.warning("检测到模型漂移，建议重新训练模型")
+            if model_performance.get('performance_decay', False):
+                logger.warning("检测到性能衰减，建议调整模型参数")
+                
+            # 计算回测风险指标
+            self.backtest_risk_metrics = self.risk_manager.calculate_risk_metrics(self.backtesting_system.daily_returns)
+            logger.info("回测风险指标计算完成")
+            
+        except Exception as e:
+            logger.error(f"回测系统运行失败: {e}")
+            self.backtest_risk_metrics = {}
+        
         # 进行多模型集成预测
         ensemble_predictions = self.make_predictions(forecast_steps=forecast_steps)
         
         # 保存当前预测记录
         prediction_id = self.save_predictions()
+        
+        # 基于模型一致性和预测结果生成交易信号
+        logger.info("=== 生成交易信号 ===")
+        trading_signal = self._generate_trading_signal(ensemble_predictions)
+        
+        # 输出交易信号
+        logger.info(f"交易信号: {trading_signal['signal']}")
+        logger.info(f"信号置信度: {trading_signal['confidence']}")
+        logger.info(f"信号理由: {trading_signal['reason']}")
         
         # 如果有可用的实际结果，进行验证（暂不实现）
         if self.actual_results:
@@ -691,7 +863,10 @@ class SocratesSystem:
             return {
                 'ensemble_predictions': ensemble_predictions,
                 'prediction_id': prediction_id,
-                'current_price': self.feature_matrix['fund_close'].iloc[-1]
+                'current_price': self.feature_matrix['fund_close'].iloc[-1],
+                'trading_signal': trading_signal,
+                'model_consistency': self.model_consistency,
+                'backtest_risk_metrics': self.backtest_risk_metrics
             }
         
         # 询问用户是否要继续（跳过实际结果输入，因为功能暂未实现）
@@ -705,7 +880,67 @@ class SocratesSystem:
         return {
             'ensemble_predictions': ensemble_predictions,
             'prediction_id': prediction_id,
-            'current_price': self.feature_matrix['fund_close'].iloc[-1]
+            'current_price': self.feature_matrix['fund_close'].iloc[-1],
+            'trading_signal': trading_signal,
+            'model_consistency': self.model_consistency,
+            'backtest_risk_metrics': self.backtest_risk_metrics
+        }
+    
+    def _generate_trading_signal(self, ensemble_predictions):
+        """基于模型一致性和预测结果生成交易信号
+        
+        参数:
+        ensemble_predictions: 集成预测结果
+        
+        返回:
+        dict: 包含交易信号的字典
+        """
+        current_price = self.feature_matrix['fund_close'].iloc[-1]
+        today_prediction = ensemble_predictions[0]
+        today_change = (today_prediction - current_price) / current_price * 100
+        
+        # 基于模型一致性调整置信度
+        consistency_score = getattr(self, 'model_consistency', {}).get('consistency_score', 0.5)
+        consistency_assessment = getattr(self, 'model_consistency', {}).get('assessment', "模型数量不足")
+        
+        # 基于回测结果调整信号
+        backtest_sharpe = self.backtest_risk_metrics.get('sharpe_ratio', 0)
+        
+        # 综合考虑多种因素生成信号
+        if today_change > 0.5 and consistency_score > 0.6 and backtest_sharpe > 0:
+            signal = "强烈买入"
+            confidence = "高"
+            reason = f"预测上涨{today_change:.2f}%，模型一致性高({consistency_score:.2f})，回测夏普比率正({backtest_sharpe:.2f})"
+        elif today_change > 0.1 and consistency_score > 0.5:
+            signal = "买入"
+            confidence = "中"
+            reason = f"预测上涨{today_change:.2f}%，模型一致性中等({consistency_score:.2f})"
+        elif today_change < -0.5 and consistency_score > 0.6 and backtest_sharpe > 0:
+            signal = "强烈卖出"
+            confidence = "高"
+            reason = f"预测下跌{abs(today_change):.2f}%，模型一致性高({consistency_score:.2f})，回测夏普比率正({backtest_sharpe:.2f})"
+        elif today_change < -0.1 and consistency_score > 0.5:
+            signal = "卖出"
+            confidence = "中"
+            reason = f"预测下跌{abs(today_change):.2f}%，模型一致性中等({consistency_score:.2f})"
+        else:
+            signal = "持有"
+            confidence = "低"
+            reason = f"预测变化不大({today_change:.2f}%)，或模型一致性不足({consistency_score:.2f})，建议观望"
+        
+        # 考虑模型一致性评估
+        if consistency_assessment == "模型预测严重分歧，置信度极低":
+            signal = "持有"
+            confidence = "极低"
+            reason += "，模型预测严重分歧，建议谨慎操作"
+        
+        return {
+            'signal': signal,
+            'confidence': confidence,
+            'reason': reason,
+            'today_change': today_change,
+            'consistency_score': consistency_score,
+            'backtest_sharpe': backtest_sharpe
         }
     
     def run_quick(self, forecast_steps=5):

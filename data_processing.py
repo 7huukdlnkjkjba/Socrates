@@ -1867,30 +1867,41 @@ class DataProcessor:
                 return False
         
         # 检查日期范围
-        if len(df['date'].dropna()) < 10:
-            logger.error(f"{data_type}数据日期数量不足")
+        valid_dates = df['date'].dropna()
+        if len(valid_dates) < 10:
+            logger.error(f"{data_type}数据日期数量不足，仅{len(valid_dates)}条有效日期")
             return False
         
         # 检查日期顺序
         if not df['date'].is_monotonic_increasing:
-            logger.error(f"{data_type}数据日期顺序不正确")
-            return False
+            logger.warning(f"{data_type}数据日期顺序不正确，正在重新排序")
+            df = df.sort_values('date')
         
         # 检查价格是否在合理范围内
-        if data_type in ['gold9999', 'gold_london', 'usdcny']:
-            if data_type == 'gold9999':
-                # 黄金9999价格范围（元/克）
-                min_price, max_price = 300, 600
-            elif data_type == 'gold_london':
-                # 伦敦金价格范围（美元/盎司）
-                min_price, max_price = 1000, 3000
-            elif data_type == 'usdcny':
-                # 美元兑人民币汇率范围
-                min_price, max_price = 6.0, 8.0
-            
-            # 检查收盘价是否在合理范围内
+        if data_type == 'gold9999':
+            # 黄金9999价格范围（元/克）
+            min_price, max_price = 300, 600
+        elif data_type == 'gold_london':
+            # 伦敦金价格范围（美元/盎司）
+            min_price, max_price = 1000, 3000
+        elif data_type == 'usdcny':
+            # 美元兑人民币汇率范围
+            min_price, max_price = 6.0, 8.0
+        elif data_type == 'boshi_gold_c':
+            # 博时黄金C基金净值范围（根据历史数据）
+            min_price, max_price = 1.0, 5.0
+        else:
+            min_price, max_price = 0, float('inf')
+        
+        # 检查收盘价是否在合理范围内
+        if data_type in ['gold9999', 'gold_london', 'usdcny', 'boshi_gold_c']:
             if df['close'].min() < min_price or df['close'].max() > max_price:
-                logger.warning(f"{data_type}数据价格超出合理范围: {df['close'].min()} - {df['close'].max()}")
+                logger.warning(f"{data_type}数据价格超出合理范围: {df['close'].min():.4f} - {df['close'].max():.4f}")
+                # 移除价格超出范围的异常值
+                df = df[(df['close'] >= min_price) & (df['close'] <= max_price)]
+                if df.empty:
+                    logger.error(f"移除异常值后{data_type}数据为空")
+                    return False
         
         # 检查价格数据是否为数字
         for col in ['open', 'high', 'low', 'close']:
@@ -1898,7 +1909,46 @@ class DataProcessor:
                 logger.error(f"{data_type}数据中{col}列不是数字类型")
                 return False
         
-        logger.info(f"{data_type}数据验证通过")
+        # 检查价格数据是否有缺失值
+        for col in ['open', 'high', 'low', 'close']:
+            missing_count = df[col].isnull().sum()
+            if missing_count > 0:
+                logger.warning(f"{data_type}数据中{col}列有{missing_count}个缺失值，正在填充")
+                df[col] = df[col].fillna(method='ffill').fillna(method='bfill')
+        
+        # 检查成交量和成交额是否为非负
+        for col in ['volume', 'amount']:
+            if df[col].min() < 0:
+                logger.warning(f"{data_type}数据中{col}列包含负值，正在修正")
+                df[col] = df[col].abs()
+        
+        # 检查数据是否有重复的日期
+        if df['date'].duplicated().any():
+            logger.warning(f"{data_type}数据包含重复日期，正在去重")
+            df = df.drop_duplicates(subset=['date'], keep='last')
+        
+        # 检查数据的完整性（连续日期）
+        if data_type == 'boshi_gold_c':
+            # 对于基金数据，检查日期连续性
+            df = df.set_index('date')
+            expected_dates = pd.date_range(start=df.index.min(), end=df.index.max(), freq='D')
+            missing_dates = expected_dates.difference(df.index)
+            if len(missing_dates) > 0:
+                logger.warning(f"{data_type}数据缺少{len(missing_dates)}个交易日")
+            df = df.reset_index()
+        
+        # 检查价格波动是否合理
+        if len(df) > 1:
+            df['price_change_pct'] = df['close'].pct_change() * 100
+            max_daily_change = df['price_change_pct'].abs().max()
+            if max_daily_change > 10:  # 单日波动超过10%视为异常
+                logger.warning(f"{data_type}数据单日最大波动{max_daily_change:.2f}%，可能存在异常值")
+        
+        # 检查数据量是否足够
+        if len(df) < 30:
+            logger.warning(f"{data_type}数据量较少，仅{len(df)}条记录")
+        
+        logger.info(f"{data_type}数据验证通过，最终数据量: {len(df)}条")
         return True
     
     def check_stationarity(self):
