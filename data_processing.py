@@ -43,6 +43,11 @@ class DataProcessor:
                 'name': '美元兑人民币汇率',
                 'url': 'https://finance.sina.com.cn/forex/quotes/USDCNY.shtml',
                 'historical_url': 'https://finance.sina.com.cn/forex/quotes_history/USDCNY.shtml'
+            },
+            'boshi_gold_c': {
+                'name': '博时黄金C',
+                'url': 'https://finance.sina.com.cn/fund/quotes/002611.shtml',
+                'historical_url': 'https://finance.sina.com.cn/fund/quotes_history/002611.shtml'
             }
         }
     
@@ -1130,6 +1135,10 @@ class DataProcessor:
         """爬取美元兑人民币汇率日线数据"""
         return self._crawl_financial_data('usdcny', start_date, end_date, max_records)
     
+    def crawl_boshi_gold_c(self, start_date=None, end_date=None, max_records=1000):
+        """爬取博时黄金C(002611)日线数据"""
+        return self._crawl_financial_data('boshi_gold_c', start_date, end_date, max_records)
+    
     def _crawl_financial_data(self, data_type, start_date=None, end_date=None, max_records=1000):
         """爬取金融数据的通用方法"""
         if data_type not in self._financial_sources:
@@ -1138,14 +1147,378 @@ class DataProcessor:
         source_info = self._financial_sources[data_type]
         logger.info(f"开始爬取{source_info['name']}数据")
         
+        # 尝试从缓存中获取数据
+        import os
+        import pickle
+        import hashlib
+        import time
+        
+        # 创建缓存目录
+        cache_dir = os.path.join(os.getcwd(), "data_cache")
+        os.makedirs(cache_dir, exist_ok=True)
+        
+        # 生成缓存文件名
+        cache_key = f"{data_type}_{max_records}"
+        if start_date:
+            cache_key += f"_{start_date.strftime('%Y%m%d')}"
+        if end_date:
+            cache_key += f"_{end_date.strftime('%Y%m%d')}"
+        
+        # 使用哈希值作为文件名
+        cache_filename = hashlib.md5(cache_key.encode()).hexdigest() + ".pkl"
+        cache_path = os.path.join(cache_dir, cache_filename)
+        
+        # 检查缓存是否存在且未过期（1天过期）
+        if os.path.exists(cache_path):
+            cache_mtime = os.path.getmtime(cache_path)
+            current_time = time.time()
+            if current_time - cache_mtime < 86400:  # 86400秒 = 1天
+                logger.info(f"从缓存中读取{source_info['name']}数据")
+                with open(cache_path, 'rb') as f:
+                    return pickle.load(f)
+            else:
+                logger.info(f"缓存已过期，重新爬取{source_info['name']}数据")
+        
+        # 尝试使用akshare作为主要数据源
+        try:
+            logger.info(f"尝试使用akshare获取{source_info['name']}数据")
+            
+            # 确保akshare库已安装
+            try:
+                import akshare as ak
+            except ImportError:
+                logger.info("正在安装akshare库...")
+                import subprocess
+                import sys
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "akshare"])
+                import akshare as ak
+            
+            # 根据数据类型使用不同的akshare接口
+            if data_type == 'gold9999':
+                # 获取上海黄金交易所黄金9999数据
+                # Try different akshare functions for gold data
+                try:
+                    # Try this function first
+                    df = ak.gold_spot_price_shanghai()
+                except AttributeError:
+                    try:
+                        # Fallback to another possible function name
+                        df = ak.gold_au9999_daily()
+                    except AttributeError:
+                        try:
+                            # Final fallback - use futures data
+                            df = ak.futures_daily(symbol="AU", exchange="SHFE")
+                        except AttributeError:
+                            # Another fallback option
+                            df = ak.stock_zh_index_daily(symbol="SHFE.AU")
+                
+                # 重命名列以匹配预期格式
+                if '日期' in df.columns:
+                    df = df.rename(columns={
+                        '日期': 'date',
+                        '开盘价': 'open',
+                        '最高价': 'high',
+                        '最低价': 'low',
+                        '收盘价': 'close',
+                        '成交量': 'volume',
+                        '成交金额(元)': 'amount'
+                    })
+                elif 'date' in df.columns:
+                    # 已包含正确列名，无需重命名
+                    pass
+                else:
+                    # 处理可能的其他列名格式
+                    df.columns = ['date', 'open', 'high', 'low', 'close', 'volume', 'amount']
+            elif data_type == 'gold_london':
+                # 获取伦敦金数据 - Try different akshare functions
+                try:
+                    df = ak.gold_global_hist()
+                except AttributeError:
+                    try:
+                        df = ak.gold_spot_price_kitco()
+                    except AttributeError:
+                        try:
+                            df = ak.stock_us_daily(symbol='GC=F')
+                        except AttributeError:
+                            # Final fallback
+                            df = ak.commodity_gold_daily()
+                
+                # 如果返回的是实时数据，转换为DataFrame
+                if isinstance(df, dict):
+                    df = pd.DataFrame([df])
+                    df['date'] = pd.Timestamp.now().normalize()
+                    df['open'] = df.get('price', df.get('开盘价', 0))
+                    df['high'] = df.get('price', df.get('最高价', 0))
+                    df['low'] = df.get('price', df.get('最低价', 0))
+                    df['close'] = df.get('price', df.get('收盘价', 0))
+                    df['volume'] = df.get('volume', 0)
+                    df['amount'] = df.get('amount', 0)
+                    df = df[['date', 'open', 'high', 'low', 'close', 'volume', 'amount']]
+                else:
+                    # 重命名列以匹配预期格式
+                    if '日期' in df.columns:
+                        df = df.rename(columns={
+                            '日期': 'date',
+                            '开盘价': 'open',
+                            '最高价': 'high',
+                            '最低价': 'low',
+                            '收盘价': 'close',
+                            '成交量': 'volume',
+                            '成交金额': 'amount'
+                        })
+                    elif 'Date' in df.columns:
+                        df = df.rename(columns={
+                            'Date': 'date',
+                            'Open': 'open',
+                            'High': 'high',
+                            'Low': 'low',
+                            'Close': 'close',
+                            'Volume': 'volume',
+                            'Amount': 'amount'
+                        })
+            elif data_type == 'usdcny':
+                # 获取美元兑人民币汇率数据
+                try:
+                    df = ak.currency_boc_safe_exchange_rate()
+                except AttributeError:
+                    try:
+                        df = ak.forex_usd_cny_daily()
+                    except AttributeError:
+                        try:
+                            df = ak.stock_us_daily(symbol='USDCNY=X')
+                        except AttributeError:
+                            # Final fallback
+                            df = ak.currency_usdcny_spot()
+                
+                # 处理不同数据源的格式差异
+                if '货币对' in df.columns:
+                    # 筛选美元兑人民币汇率
+                    df = df[df['货币对'] == '美元/人民币']
+                    
+                    # 重命名列以匹配预期格式
+                    df = df.rename(columns={
+                        '日期': 'date',
+                        '中间价': 'close'
+                    })
+                elif '日期' in df.columns:
+                    df = df.rename(columns={
+                        '日期': 'date',
+                        '开盘价': 'open',
+                        '最高价': 'high',
+                        '最低价': 'low',
+                        '收盘价': 'close'
+                    })
+                elif 'Date' in df.columns:
+                    df = df.rename(columns={
+                        'Date': 'date',
+                        'Open': 'open',
+                        'High': 'high',
+                        'Low': 'low',
+                        'Close': 'close'
+                    })
+                
+                # 确保所有必要列存在
+                if 'open' not in df.columns:
+                    df['open'] = df['close']
+                if 'high' not in df.columns:
+                    df['high'] = df['close']
+                if 'low' not in df.columns:
+                    df['low'] = df['close']
+                if 'volume' not in df.columns:
+                    df['volume'] = 0
+                if 'amount' not in df.columns:
+                    df['amount'] = 0
+                
+                # 选择需要的列
+                df = df[['date', 'open', 'high', 'low', 'close', 'volume', 'amount']]
+            elif data_type == 'boshi_gold_c':
+                # 获取博时黄金C(002611)基金数据 - 尝试不同的akshare函数
+                # 输出akshare版本信息
+                logger.info(f"akshare版本: {ak.__version__}")
+                
+                fund_code = "002611"
+                df = None
+                
+                # 尝试1: 使用基金每日净值数据函数（推荐）
+                try:
+                    logger.info(f"尝试使用fund_open_fund_daily_em获取{source_info['name']}数据")
+                    df = ak.fund_open_fund_daily_em(fund=fund_code)
+                    logger.info(f"fund_open_fund_daily_em调用成功，数据形状: {df.shape}")
+                    logger.info(f"数据列名: {list(df.columns)}")
+                except AttributeError as e:
+                    logger.warning(f"fund_open_fund_daily_em函数不存在: {str(e)}")
+                except Exception as e:
+                    logger.warning(f"fund_open_fund_daily_em调用失败: {str(e)}")
+                
+                # 尝试2: 使用另一个基金数据函数
+                if df is None or df.empty:
+                    try:
+                        logger.info(f"尝试使用fund_em_open_fund_daily获取{source_info['name']}数据")
+                        df = ak.fund_em_open_fund_daily(symbol=fund_code)
+                        logger.info(f"fund_em_open_fund_daily调用成功，数据形状: {df.shape}")
+                        logger.info(f"数据列名: {list(df.columns)}")
+                    except AttributeError as e:
+                        logger.warning(f"fund_em_open_fund_daily函数不存在: {str(e)}")
+                    except Exception as e:
+                        logger.warning(f"fund_em_open_fund_daily调用失败: {str(e)}")
+                
+                # 尝试3: 使用基金历史净值数据函数
+                if df is None or df.empty:
+                    try:
+                        logger.info(f"尝试使用fund_net_value_history获取{source_info['name']}数据")
+                        df = ak.fund_net_value_history(fund=fund_code)
+                        logger.info(f"fund_net_value_history调用成功，数据形状: {df.shape}")
+                        logger.info(f"数据列名: {list(df.columns)}")
+                    except AttributeError as e:
+                        logger.warning(f"fund_net_value_history函数不存在: {str(e)}")
+                    except Exception as e:
+                        logger.warning(f"fund_net_value_history调用失败: {str(e)}")
+                
+                # 尝试4: 使用ETF历史数据函数作为备选
+                if df is None or df.empty:
+                    try:
+                        logger.info(f"尝试使用fund_etf_hist_em获取{source_info['name']}数据")
+                        df = ak.fund_etf_hist_em(symbol=fund_code)
+                        logger.info(f"fund_etf_hist_em调用成功，数据形状: {df.shape}")
+                        logger.info(f"数据列名: {list(df.columns)}")
+                    except AttributeError as e:
+                        logger.warning(f"fund_etf_hist_em函数不存在: {str(e)}")
+                    except Exception as e:
+                        logger.warning(f"fund_etf_hist_em调用失败: {str(e)}")
+                
+                # 尝试5: 使用fund_em_open_fund_info获取基金信息
+                if df is None or df.empty:
+                    try:
+                        logger.info(f"尝试使用fund_em_open_fund_info获取{source_info['name']}数据")
+                        df = ak.fund_em_open_fund_info(symbol=fund_code)
+                        logger.info(f"fund_em_open_fund_info调用成功，数据形状: {df.shape}")
+                        logger.info(f"数据列名: {list(df.columns)}")
+                    except AttributeError as e:
+                        logger.warning(f"fund_em_open_fund_info函数不存在: {str(e)}")
+                    except Exception as e:
+                        logger.warning(f"fund_em_open_fund_info调用失败: {str(e)}")
+                
+                # 如果所有尝试都失败，抛出异常
+                if df is None or df.empty:
+                    logger.error(f"所有akshare函数都无法获取{source_info['name']}数据")
+                    raise Exception(f"无法从akshare获取{source_info['name']}数据")
+                
+                # 重命名列以匹配预期格式
+                logger.info(f"开始处理{source_info['name']}数据，当前列: {list(df.columns)}")
+                
+                # 处理不同数据源返回的列名
+                if '净值日期' in df.columns:
+                    if '单位净值' in df.columns:
+                        df = df.rename(columns={
+                            '净值日期': 'date',
+                            '单位净值': 'close'
+                        })
+                    elif '日增长率' not in df.columns:  # 避免将增长率列作为close
+                        df = df.rename(columns={
+                            '净值日期': 'date',
+                            df.columns[1]: 'close'  # 使用第二列作为收盘价（如果是单位净值）
+                        })
+                    else:
+                        logger.error(f"无法识别{source_info['name']}数据的单位净值列")
+                        raise Exception(f"无法识别{source_info['name']}数据的单位净值列")
+                elif '日期' in df.columns:
+                    if '收盘价' in df.columns:
+                        df = df.rename(columns={
+                            '日期': 'date',
+                            '收盘价': 'close'
+                        })
+                    elif '单位净值' in df.columns:
+                        df = df.rename(columns={
+                            '日期': 'date',
+                            '单位净值': 'close'
+                        })
+                    else:
+                        df = df.rename(columns={
+                            '日期': 'date',
+                            df.columns[1]: 'close'  # 使用第二列作为收盘价
+                        })
+                elif 'Date' in df.columns:
+                    df = df.rename(columns={
+                        'Date': 'date',
+                        'Close': 'close'
+                    })
+                elif '净值日期' not in df.columns and '日期' not in df.columns:
+                    # 处理其他可能的日期列名
+                    date_cols = [col for col in df.columns if '日期' in col or 'date' in col.lower()]
+                    if date_cols:
+                        df = df.rename(columns={
+                            date_cols[0]: 'date',
+                            df.columns[1]: 'close'  # 使用第二列作为收盘价
+                        })
+                    else:
+                        logger.warning(f"无法识别{source_info['name']}数据的日期列，使用默认列名")
+                        df.columns = ['date', 'close'] + list(df.columns[2:])
+                
+                # 确保所有必要列存在
+                logger.info(f"处理后的数据列: {list(df.columns)}")
+                
+                # 复制close值到其他价格列（基金数据通常只有收盘价）
+                df['open'] = df.get('open', df['close'])
+                df['high'] = df.get('high', df['close'])
+                df['low'] = df.get('low', df['close'])
+                # 添加缺失的列
+                df['volume'] = df.get('volume', 0)
+                df['amount'] = df.get('amount', 0)
+                
+                logger.info(f"{source_info['name']}数据处理完成，数据形状: {df.shape}")
+            else:
+                raise ValueError(f"不支持的数据类型: {data_type}")
+            
+            # 转换日期格式
+            df['date'] = pd.to_datetime(df['date'])
+            
+            # 转换数值列
+            for col in ['open', 'high', 'low', 'close', 'volume', 'amount']:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+            
+            # 按日期排序
+            df = df.sort_values('date')
+            
+            # 限制记录数量
+            if max_records:
+                df = df.tail(max_records)
+            
+            # 验证数据有效性
+            if self._validate_data(df, data_type):
+                logger.info(f"成功从akshare获取{source_info['name']}数据，共{len(df)}条记录")
+                # 保存数据到缓存
+                logger.info(f"将{source_info['name']}数据保存到缓存")
+                with open(cache_path, 'wb') as f:
+                    pickle.dump(df, f)
+                return df
+            else:
+                logger.error("akshare返回的数据无效")
+        except Exception as e:
+            logger.error(f"使用akshare获取{source_info['name']}数据失败: {str(e)}")
+        
         # 尝试使用新浪财经API
         try:
             # 新浪财经的接口可能已经更新，尝试使用新的接口格式
             if data_type == 'gold9999':
                 # 使用新浪财经的实时行情页面爬取
                 url = "https://finance.sina.com.cn/futures/quotes/AUTD.shtml"
-                response = requests.get(url)
+                
+                # 添加适当的请求头和延迟
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Referer': 'https://finance.sina.com.cn/',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7'
+                }
+                
+                import time
+                time.sleep(1)  # 添加1秒延迟
+                
+                response = requests.get(url, headers=headers)
                 response.raise_for_status()
+                
+                # 新浪财经使用GBK编码，确保正确解析
+                response.encoding = 'GBK'
                 
                 from bs4 import BeautifulSoup
                 soup = BeautifulSoup(response.text, 'html.parser')
@@ -1181,31 +1554,66 @@ class DataProcessor:
                                 if max_records:
                                     df = df.tail(max_records)
                                 
-                                logger.info(f"成功从网页表格爬取{source_info['name']}数据，共{len(df)}条记录")
-                                return df
+                                # 验证数据有效性
+                                if self._validate_data(df, data_type):
+                                    logger.info(f"成功从网页表格爬取{source_info['name']}数据，共{len(df)}条记录")
+                                    # 保存数据到缓存
+                                    logger.info(f"将{source_info['name']}数据保存到缓存")
+                                    with open(cache_path, 'wb') as f:
+                                        pickle.dump(df, f)
+                                    return df
+                                else:
+                                    logger.error("网页表格爬取的数据无效")
                         except Exception as e:
                             logger.warning(f"解析表格{i}失败: {str(e)}")
                             continue
             
             # 如果表格解析失败，尝试使用东方财富网的API（备选数据源）
             logger.info(f"尝试使用东方财富网API获取{source_info['name']}数据")
+            # 更新东方财富网API端点和参数，使用更稳定的接口
+            base_url = "http://push2his.eastmoney.com/api/qt/stock/kline/get"
+            
+            # 根据数据类型设置正确的secid和其他参数
             if data_type == 'gold9999':
-                # 东方财富网黄金9999数据（正确的secid）
-                url = "http://push2his.eastmoney.com/api/qt/stock/kline/get?secid=8.000060&fields1=f1,f2,f3,f4,f5&fields2=f51,f52,f53,f54,f55,f56,f57,f58&klt=101&fqt=1"
+                # 上海黄金交易所黄金9999 (AUTD) - 使用正确的secid
+                secid = "8.000060"
             elif data_type == 'gold_london':
-                # 东方财富网伦敦金数据（使用正确的secid）
-                url = "http://push2his.eastmoney.com/api/qt/stock/kline/get?secid=100.XAUUSD&fields1=f1,f2,f3,f4,f5&fields2=f51,f52,f53,f54,f55,f56,f57,f58&klt=101&fqt=1"
+                # 伦敦金现 (XAUUSD)
+                secid = "100.XAUUSD"
             elif data_type == 'usdcny':
-                # 东方财富网美元兑人民币数据（使用正确的secid）
-                url = "http://push2his.eastmoney.com/api/qt/stock/kline/get?secid=100.USDCNY&fields1=f1,f2,f3,f4,f5&fields2=f51,f52,f53,f54,f55,f56,f57,f58&klt=101&fqt=1"
+                # 美元兑人民币汇率 (USDCNY)
+                secid = "100.USDCNY"
+            elif data_type == 'boshi_gold_c':
+                # 博时黄金C (002611)
+                secid = "0.002611"
             else:
                 raise ValueError(f"不支持的数据类型: {data_type}")
             
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                'Referer': 'http://quote.eastmoney.com/'
+            # 构建完整的API请求URL，添加更多参数以确保获取数据
+            params = {
+                'secid': secid,
+                'fields1': 'f1,f2,f3,f4,f5',
+                'fields2': 'f51,f52,f53,f54,f55,f56,f57,f58',
+                'klt': '101',  # 日线数据
+                'fqt': '1',    # 复权类型
+                'beg': '0',    # 开始时间，0表示从最开始
+                'end': '20500101'  # 结束时间，设置为未来日期以获取最新数据
             }
-            response = requests.get(url, headers=headers)
+            
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Referer': 'http://quote.eastmoney.com/',
+                'Accept': 'application/json, text/javascript, */*; q=0.01',
+                'X-Requested-With': 'XMLHttpRequest',
+                'Origin': 'http://quote.eastmoney.com',
+                'Connection': 'keep-alive'
+            }
+            
+            import time
+            time.sleep(1)  # 添加1秒延迟
+            
+            # 使用params参数构建URL
+            response = requests.get(base_url, params=params, headers=headers)
             response.raise_for_status()
             
             import json
@@ -1230,100 +1638,195 @@ class DataProcessor:
                 if max_records:
                     df = df.tail(max_records)
                 
-                logger.info(f"成功从东方财富网API爬取{source_info['name']}数据，共{len(df)}条记录")
-                return df
-            else:
-                logger.error("东方财富网API返回数据为空")
-                
+                # 验证数据有效性
+                if self._validate_data(df, data_type):
+                    logger.info(f"成功从东方财富网API爬取{source_info['name']}数据，共{len(df)}条记录")
+                    # 保存数据到缓存
+                    logger.info(f"将{source_info['name']}数据保存到缓存")
+                    with open(cache_path, 'wb') as f:
+                        pickle.dump(df, f)
+                    return df
+                else:
+                    logger.error("东方财富网API返回的数据无效")
         except Exception as e:
-            logger.error(f"爬取{source_info['name']}数据失败: {str(e)}")
+            logger.error(f"使用新浪财经和东方财富网API获取{source_info['name']}数据失败: {str(e)}")
         
-        # 如果所有API都失败，生成模拟数据
-        logger.info(f"所有API爬取失败，生成{source_info['name']}的模拟数据")
-        
-        # 生成模拟数据 - 使用固定的日期范围，确保所有数据源的日期一致
-        # 使用当前日期减去固定天数作为起始日期
-        end_date = pd.Timestamp.now().normalize()  # 去除时间部分
-        start_date = end_date - pd.Timedelta(days=max_records-1)
-        dates = pd.date_range(start=start_date, end=end_date, freq='D')
-        
-        if data_type == 'gold9999':
-            # 黄金9999模拟数据（约400-450元/克）
-            base_price = 420
-            volatility = 5
-            trend = 0.05
-            prices = []
-            current_price = base_price
+        # 尝试使用雅虎财经API（添加了请求头和延迟）
+        try:
+            logger.info(f"尝试使用雅虎财经API获取{source_info['name']}数据")
             
-            for i, date in enumerate(dates):
-                # 添加趋势和随机波动
-                current_price += trend + (np.random.randn() * volatility)
-                # 确保价格在合理范围内
-                current_price = max(380, min(460, current_price))
-                prices.append(current_price)
-                
-            df = pd.DataFrame({
-                'date': dates,
-                'open': [p * (1 + np.random.randn() * 0.01) for p in prices],
-                'high': [p * (1 + np.random.randn() * 0.02) for p in prices],
-                'low': [p * (1 - np.random.randn() * 0.02) for p in prices],
-                'close': prices,
-                'volume': [int(np.random.randint(100000, 1000000)) for _ in dates]
-            })
-        elif data_type == 'gold_london':
-            # 伦敦金模拟数据（约1800-2200美元/盎司）
-            base_price = 2000
-            volatility = 20
-            trend = 0.5
-            prices = []
-            current_price = base_price
+            # 检查yfinance库是否已安装
+            try:
+                import yfinance as yf
+            except ImportError:
+                logger.info("正在安装yfinance库...")
+                import subprocess
+                import sys
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "yfinance"])
+                import yfinance as yf
             
-            for i, date in enumerate(dates):
-                current_price += trend + (np.random.randn() * volatility)
-                current_price = max(1800, min(2200, current_price))
-                prices.append(current_price)
-                
-            df = pd.DataFrame({
-                'date': dates,
-                'open': [p * (1 + np.random.randn() * 0.01) for p in prices],
-                'high': [p * (1 + np.random.randn() * 0.02) for p in prices],
-                'low': [p * (1 - np.random.randn() * 0.02) for p in prices],
-                'close': prices,
-                'volume': [int(np.random.randint(500000, 5000000)) for _ in dates]
-            })
-        elif data_type == 'usdcny':
-            # 美元兑人民币汇率模拟数据（约6.3-7.3）
-            base_rate = 6.8
-            volatility = 0.05
-            trend = -0.001
-            rates = []
-            current_rate = base_rate
+            # 雅虎财经的代码映射
+            ticker_map = {
+                'gold9999': 'GC=F',  # COMEX黄金期货
+                'gold_london': 'GC=F',  # 使用COMEX黄金期货作为伦敦金的替代
+                'usdcny': 'CNY=X'  # 美元兑人民币汇率
+            }
             
-            for i, date in enumerate(dates):
-                current_rate += trend + (np.random.randn() * volatility)
-                current_rate = max(6.3, min(7.3, current_rate))
-                rates.append(current_rate)
+            if data_type in ticker_map:
+                ticker = ticker_map[data_type]
                 
-            df = pd.DataFrame({
-                'date': dates,
-                'open': [r * (1 + np.random.randn() * 0.001) for r in rates],
-                'high': [r * (1 + np.random.randn() * 0.002) for r in rates],
-                'low': [r * (1 - np.random.randn() * 0.002) for r in rates],
-                'close': rates,
-                'volume': [int(np.random.randint(1000000, 10000000)) for _ in dates]
-            })
-        else:
-            raise ValueError(f"不支持的数据类型: {data_type}")
+                # 获取历史数据
+                start_date = pd.Timestamp.now() - pd.Timedelta(days=max_records)
+                end_date = pd.Timestamp.now()
+                
+                # 添加请求头和延迟
+                import time
+                time.sleep(1.5)  # 添加更长的延迟避免被限速
+                
+                # 设置yfinance的请求头
+                yf.pdr_override()
+                
+                # 尝试使用yfinance获取数据，添加更多参数
+                df = yf.download(
+                    ticker, 
+                    start=start_date, 
+                    end=end_date,
+                    threads=False,
+                    group_by='ticker',
+                    progress=False,
+                    auto_adjust=False,
+                    actions=False
+                )
+                
+                if not df.empty:
+                    # 转换为与其他数据源一致的格式
+                    df = df.reset_index()
+                    df.columns = ['date', 'open', 'high', 'low', 'close', 'adj_close', 'volume']
+                    
+                    # 只保留需要的列
+                    df = df[['date', 'open', 'high', 'low', 'close', 'volume']]
+                    
+                    # 添加amount列（雅虎财经没有直接提供）
+                    df['amount'] = df['close'] * df['volume']
+                    
+                    # 限制记录数量
+                    if max_records:
+                        df = df.tail(max_records)
+                    
+                    # 验证数据有效性
+                    if self._validate_data(df, data_type):
+                        logger.info(f"成功从雅虎财经API爬取{source_info['name']}数据，共{len(df)}条记录")
+                        # 保存数据到缓存
+                        logger.info(f"将{source_info['name']}数据保存到缓存")
+                        with open(cache_path, 'wb') as f:
+                            pickle.dump(df, f)
+                        return df
+                    else:
+                        logger.error("雅虎财经API返回的数据无效")
+                else:
+                    logger.error("雅虎财经API返回数据为空")
+        except Exception as e:
+            logger.error(f"使用雅虎财经API获取{source_info['name']}数据失败: {str(e)}")
         
-        # 转换数据类型
-        for col in ['open', 'high', 'low', 'close', 'volume']:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
+        # 尝试使用英为财情API
+        try:
+            logger.info(f"尝试使用英为财情API获取{source_info['name']}数据")
+            
+            # 英为财情的API接口
+            if data_type == 'gold9999':
+                url = "https://www.investing.com/instruments/HistoricalDataAjax"
+                params = {
+                    'curr_id': '8830',  # 黄金现货
+                    'smlID': '1159963',
+                    'header': 'Gold%20Spot',
+                    'st_date': (pd.Timestamp.now() - pd.Timedelta(days=max_records)).strftime('%m/%d/%Y'),
+                    'end_date': pd.Timestamp.now().strftime('%m/%d/%Y'),
+                    'interval_sec': 'Daily',
+                    'sort_col': 'date',
+                    'sort_ord': 'DESC',
+                    'action': 'historical_data'
+                }
+            elif data_type == 'gold_london':
+                url = "https://www.investing.com/instruments/HistoricalDataAjax"
+                params = {
+                    'curr_id': '8830',  # 黄金现货
+                    'smlID': '1159963',
+                    'header': 'Gold%20Spot',
+                    'st_date': (pd.Timestamp.now() - pd.Timedelta(days=max_records)).strftime('%m/%d/%Y'),
+                    'end_date': pd.Timestamp.now().strftime('%m/%d/%Y'),
+                    'interval_sec': 'Daily',
+                    'sort_col': 'date',
+                    'sort_ord': 'DESC',
+                    'action': 'historical_data'
+                }
+            elif data_type == 'usdcny':
+                url = "https://www.investing.com/instruments/HistoricalDataAjax"
+                params = {
+                    'curr_id': '151',  # 美元兑人民币汇率
+                    'smlID': '1159963',
+                    'header': 'USD/CNY',
+                    'st_date': (pd.Timestamp.now() - pd.Timedelta(days=max_records)).strftime('%m/%d/%Y'),
+                    'end_date': pd.Timestamp.now().strftime('%m/%d/%Y'),
+                    'interval_sec': 'Daily',
+                    'sort_col': 'date',
+                    'sort_ord': 'DESC',
+                    'action': 'historical_data'
+                }
+            else:
+                raise ValueError(f"不支持的数据类型: {data_type}")
+            
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Referer': 'https://www.investing.com/',
+                'X-Requested-With': 'XMLHttpRequest'
+            }
+            
+            response = requests.get(url, params=params, headers=headers)
+            response.raise_for_status()
+            
+            # 解析HTML响应
+            soup = BeautifulSoup(response.text, 'html.parser')
+            table = soup.find('table', class_='historicalTbl')
+            
+            if table:
+                    df = pd.read_html(str(table))[0]
+                    
+                    # 重命名列
+                    df.columns = ['date', 'close', 'open', 'high', 'low', 'change_percent']
+                    
+                    # 转换日期格式
+                    df['date'] = pd.to_datetime(df['date'], format='%m/%d/%Y')
+                    
+                    # 转换数值列
+                    for col in ['open', 'high', 'low', 'close']:
+                        df[col] = pd.to_numeric(df[col].str.replace(',', ''), errors='coerce')
+                    
+                    # 排序并限制记录数量
+                    df = df.sort_values('date')
+                    if max_records:
+                        df = df.tail(max_records)
+                    
+                    # 添加volume和amount列（英为财情没有直接提供）
+                    df['volume'] = 0
+                    df['amount'] = df['close'] * df['volume']
+                    
+                    # 验证数据有效性
+                    if self._validate_data(df, data_type):
+                        logger.info(f"成功从英为财情API爬取{source_info['name']}数据，共{len(df)}条记录")
+                        # 保存数据到缓存
+                        logger.info(f"将{source_info['name']}数据保存到缓存")
+                        with open(cache_path, 'wb') as f:
+                            pickle.dump(df, f)
+                        return df
+                    else:
+                        logger.error("英为财情API返回的数据无效")
+            else:
+                logger.error("英为财情API没有找到数据表格")
+        except Exception as e:
+            logger.error(f"使用英为财情API获取{source_info['name']}数据失败: {str(e)}")
         
-        # 按日期排序
-        df = df.sort_values('date')
-        
-        logger.info(f"成功生成{source_info['name']}的模拟数据，共{len(df)}条记录")
-        return df
+        # 如果所有API都失败，抛出异常而不是生成模拟数据
+        raise Exception(f"所有数据源（akshare、新浪财经、东方财富网、雅虎财经、英为财情）均无法获取{source_info['name']}的真实数据，请检查网络连接和API可用性")
     
     def clean_data(self, drop_na=True, method='ffill', threshold=3):
         """数据清洗：处理缺失值和异常值"""
@@ -1349,6 +1852,54 @@ class DataProcessor:
         self.data = self.data[z_scores < threshold]
         
         return self.data
+    
+    def _validate_data(self, df, data_type):
+        """验证爬取的数据是否有效"""
+        if df is None or df.empty:
+            logger.error(f"{data_type}数据为空")
+            return False
+        
+        # 检查必要的列是否存在
+        required_columns = ['date', 'open', 'high', 'low', 'close', 'volume']
+        for col in required_columns:
+            if col not in df.columns:
+                logger.error(f"{data_type}数据缺少必要的列: {col}")
+                return False
+        
+        # 检查日期范围
+        if len(df['date'].dropna()) < 10:
+            logger.error(f"{data_type}数据日期数量不足")
+            return False
+        
+        # 检查日期顺序
+        if not df['date'].is_monotonic_increasing:
+            logger.error(f"{data_type}数据日期顺序不正确")
+            return False
+        
+        # 检查价格是否在合理范围内
+        if data_type in ['gold9999', 'gold_london', 'usdcny']:
+            if data_type == 'gold9999':
+                # 黄金9999价格范围（元/克）
+                min_price, max_price = 300, 600
+            elif data_type == 'gold_london':
+                # 伦敦金价格范围（美元/盎司）
+                min_price, max_price = 1000, 3000
+            elif data_type == 'usdcny':
+                # 美元兑人民币汇率范围
+                min_price, max_price = 6.0, 8.0
+            
+            # 检查收盘价是否在合理范围内
+            if df['close'].min() < min_price or df['close'].max() > max_price:
+                logger.warning(f"{data_type}数据价格超出合理范围: {df['close'].min()} - {df['close'].max()}")
+        
+        # 检查价格数据是否为数字
+        for col in ['open', 'high', 'low', 'close']:
+            if not pd.api.types.is_numeric_dtype(df[col]):
+                logger.error(f"{data_type}数据中{col}列不是数字类型")
+                return False
+        
+        logger.info(f"{data_type}数据验证通过")
+        return True
     
     def check_stationarity(self):
         """检验时间序列的平稳性"""
