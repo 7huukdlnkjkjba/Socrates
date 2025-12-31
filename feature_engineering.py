@@ -283,6 +283,67 @@ class FeatureEngineer:
         
         return self.feature_matrix
     
+    def create_core_feature_matrix(self):
+        """创建精简的核心特征矩阵，只包含8个核心特征
+        
+        返回:
+        DataFrame: 包含8个核心特征的特征矩阵
+        """
+        logger.info("开始创建精简的核心特征矩阵")
+        
+        # 首先对齐所有数据
+        self.align_data()
+        
+        # 初始化特征矩阵
+        core_feature_matrix = pd.DataFrame(index=self.fund_data.index)
+        
+        # 1. 技术特征（3个）
+        # 1日收益率
+        core_feature_matrix['returns_1d'] = self.fund_data['close'].pct_change(periods=1)
+        # 20日波动率（年化）
+        log_returns = np.log(self.fund_data['close'] / self.fund_data['close'].shift(1))
+        core_feature_matrix['volatility_20d'] = log_returns.rolling(window=20).std() * np.sqrt(252)
+        # 50日动量（收益率）
+        core_feature_matrix['momentum_50d'] = self.fund_data['close'].pct_change(periods=50)
+        
+        # 2. 宏观特征（3个）
+        # 美元指数变化（使用美元兑人民币汇率变化作为替代）
+        core_feature_matrix['dollar_index_change'] = self.usdcny_data['close'].pct_change(periods=1)
+        # 黄金价格相关性（使用基金与黄金9999的10日滚动相关性）
+        fund_close = self.fund_data['close']
+        gold9999_close = self.gold9999_data['close']
+        core_feature_matrix['gold_correlation_10d'] = fund_close.rolling(window=10).corr(gold9999_close)
+        # 金价价差（黄金9999与伦敦金现的价差，反映市场流动性）
+        oz_to_gram = 31.1035  # 盎司到克的转换系数
+        gold_london_cny = self.gold_london_data['close'] * self.usdcny_data['close'] / oz_to_gram
+        core_feature_matrix['gold_price_spread'] = self.gold9999_data['close'] - gold_london_cny
+        
+        # 3. 市场情绪（2个）
+        # 黄金波动率变化（使用黄金9999的20日波动率）
+        gold_log_returns = np.log(self.gold9999_data['close'] / self.gold9999_data['close'].shift(1))
+        core_feature_matrix['gold_volatility_20d'] = gold_log_returns.rolling(window=20).std() * np.sqrt(252)
+        # 趋势强度（使用基金收盘价与20日均线的偏离程度）
+        fund_ma_20 = self.fund_data['close'].rolling(window=20).mean()
+        core_feature_matrix['trend_strength'] = (self.fund_data['close'] - fund_ma_20) / fund_ma_20
+        
+        # 添加原始目标列
+        core_feature_matrix['fund_close'] = self.fund_data['close']
+        
+        # 处理无穷大值和非常大的值
+        core_feature_matrix.replace([np.inf, -np.inf], np.nan, inplace=True)
+        
+        # 删除包含缺失值的行
+        core_feature_matrix.dropna(inplace=True)
+        
+        logger.info(f"核心特征矩阵创建完成，形状: {core_feature_matrix.shape}")
+        logger.info(f"核心特征数量: {len(core_feature_matrix.columns)}")
+        logger.info(f"核心特征列表: {list(core_feature_matrix.columns)}")
+        
+        # 更新特征矩阵
+        self.feature_matrix = core_feature_matrix
+        
+        return core_feature_matrix
+    
     def get_feature_importance(self, target_column='fund_close', n_estimators=100, random_state=42):
         """使用随机森林计算特征重要性
         
